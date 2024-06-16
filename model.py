@@ -10,7 +10,7 @@ eval_interval = 300
 learning_rate = 1e-2
 device = "cuda" if torch.cuda.is_available() else "cpu"
 eval_iters = 200
-
+n_embed = 32
 #----------------------
 
 torch.manual_seed(1332)
@@ -59,33 +59,30 @@ def get_batch(split):
 
   return x , y
 
-xb , yb = get_batch('train')
-print("Inputs:")
-print(xb.shape)
-print(xb)
-print(yb, "yb")
-print(yb.shape)
+@torch.no_grad
+def estimate_loss():
+  out = {}
+  model.eval()
+  for split in ['train', 'val']:
+    losses = torch.zeros(eval_iters)
+    for k in range(eval_iters):
+      X, Y = get_batch(split)
+      logits, loss = model(X , Y)
+      losses[k] = loss.item()
+    out[split] = losses.mean()
+  model.train()
+  return out
 
 torch.manual_seed(1337)
-
-# data loading
-def get_batch(split):
-  # generate a small batch of data of inputs x and targets y
-  data = train_data if split == "train" else val_data
-  ix = torch.randint(len(data) - block_size , (batch_size,))
-
-  x = torch.stack([data[i:i+block_size] for i in ix])
-  y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-
-  x,y = x.to(device), y.to(device)
-  return x,y
-
 
 class BigramsLanguageModel(nn.Module):
   def __init__(self, vocab_size):
     super().__init__()
     # each token directly reads off the logits for the next token from a loopup table
-    self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+    # self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+    self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
+    self.position_embedding_table = nn.Embedding(block_size, n_embed)
+    
 
   def forward(self, idx, targets=None):
     # idx and targets are both (B,T) tensor of integers
@@ -117,10 +114,26 @@ class BigramsLanguageModel(nn.Module):
     return idx
 
 model = BigramsLanguageModel(vocab_size)
-
 n = model.to(device)
+
 # create pytorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 for iter in range(max_iters):
-  xb , yb = get_batch
+  # every oncein a while evaluate the loss on train and val sets
+  if iter % eval_interval == 0:
+    losses = estimate_loss()
+    print(f"Step {iter} : train_loss {losses['train']:.4f} val loss {losses['val']:.4f}")
+  # sample a batch of data
+  xb , yb = get_batch('train')
+
+  # evaluate the loss
+  logits, loss = model(xb, yb)
+  optimizer.zero_grad(set_to_none=True)
+  loss.backward()
+  optimizer.step()
+
+
+# generate from the model
+context = torch.zeros((1,1), dtype=torch.long, device=device)
+print(decode(n.generate(context, max_new_tokens=500)[0].tolist()))
