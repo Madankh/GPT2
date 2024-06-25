@@ -92,6 +92,26 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+    
+    def forward(self, idx):
+        # idxus is if shape (B, T)
+        B , T = idx.size()
+        assert T<= self.config.block_size, f"Cannot forward sequence of lenth {T}, block size"
+        # forward the token and positition embedding
+        pos = torch.arange(0,T,dtype=torch.long, device=idx.device) # shape (T)
+        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T , n_embed)
+        print(idx.shape)
+        tok_emb = self.transformer.wte(idx) # position embeddings of shape (B , T, n_embed)
+        print(tok_emb.shape)
+        x = pos_emb + tok_emb
+
+        for block in self.transformer.h:
+            x = block(x)
+        # forward the final layernorm and time classifier
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x) # (B , T , vocab_size)
+        return logits
+    
     @classmethod
     def from_pretrained(cls, model_type):
         """Loads pretrained GPT-2 model weights from huggingfacve"""
