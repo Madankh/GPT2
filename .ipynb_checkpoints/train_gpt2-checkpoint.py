@@ -1,10 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# import numpy as np
+import numpy as np
 import math
 from dataclasses import dataclass
-import time
 
 class MLP(nn.Module):
     def __init__(self, config):
@@ -65,20 +64,12 @@ class Block(nn.Module):
         x =  x + self.mlp(self.ln_2(x))
         return x
 
-# @dataclass
-# class GPTConfig:
-#     block_size :int = 1024
-#     vocab_size : int = 58257
-#     n_layer : int = 12
-#     n_head : int = 12
-#     n_embd : int = 768
-
 @dataclass
 class GPTConfig:
     block_size :int = 1024
     vocab_size : int = 58257
-    n_layer : int = 4
-    n_head : int = 4
+    n_layer : int = 12
+    n_head : int = 12
     n_embd : int = 768
 
 
@@ -216,7 +207,7 @@ if torch.cuda.is_available():
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = 'mps'
 print("using device" , device)
-# de
+# device = "cpu"
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
@@ -226,31 +217,19 @@ if torch.cuda.is_available():
 # model = GPT.from_pretrained('gpt2')
 # model.eval()
 # model.to('cuda')
-train_loader = DataLoaderLite(B=16, T=112)
-
-torch.set_float32_matmul_precision('high')
+train_loader = DataLoaderLite(B=4, T=32)
 # get logits
 model = GPT(GPTConfig)
 model.to(device)
-# model = torch.compile(model)
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
-    t0 = time.time()
     x , y = train_loader.next_batch()
     x, y = x.to(device) , y.to(device)
     optimizer.zero_grad()
-    # with torch.autocast(device_type=device, dtype=torch.bfloat16):
-    #     logits , loss = model(x , y)
-    logits , loss = model(x, y)
+    logits , loss = model(x , y)
     loss.backward()
     optimizer.step()
-    torch.cuda.synchronize()
-    t1 = time.time()
-    dt = (t1 - t0) * 1000 # time difference in mi;eseconds
-    tokens_per_sec = (train_loader.B * train_loader.T) / (t1-t0)
-    print(f"Step {i} , loss {loss.item()}, dt : {dt:.2f}ms , tok/sec:{tokens_per_sec}")
-
-import sys; sys.exit(0)   
+    print(f"Step {i} , loss {loss.item()}")
 
 
 # generate right now x is  (B, T) where B = 5,T = 8
