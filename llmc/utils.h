@@ -16,5 +16,11 @@
 #include<direct.h>
 #endif
 
+// ----------------------------------------------------------------------------
+// fread convenience utils, with nice handling of error checking using macros
+// simple replace fopen, fread, fclose, fseek
+// with fopenCheck, freadCheck, fcloseCheck, fseekCheck 
+ 
 
+extern inline File *fopen_check(const char *path, const char *mode,  const char *file)
 #endif
