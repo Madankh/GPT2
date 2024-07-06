@@ -69,23 +69,13 @@ class Block(nn.Module):
         x =  x + self.mlp(self.ln_2(x))
         return x
 
-# @dataclass
-# class GPTConfig:
-#     block_size :int = 1024
-#     vocab_size : int = 58257
-#     n_layer : int = 12
-#     n_head : int = 12
-#     n_embd : int = 768
-
 @dataclass
 class GPTConfig:
     block_size :int = 1024
     vocab_size : int = 58257
-    n_layer : int = 4
-    n_head : int = 4
+    n_layer : int = 12
+    n_head : int = 12
     n_embd : int = 768
-
-
 
 class GPT(nn.Module):
     def __init__(self, config):
@@ -224,61 +214,33 @@ print("using device" , device)
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
-# num_return_sequences = 5
-# max_length = 30
 
-# model = GPT.from_pretrained('gpt2')
-# model.eval()
-# model.to('cuda')
-train_loader = DataLoaderLite(B=16, T=112)
+train_loader = DataLoaderLite(B=16, T=1024)
 
-# torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('high')
 # get logits
-model = GPT(GPTConfig)
+model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
-# model = torch.compile(model)
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+model = torch.compile(model)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=10e-8)
 for i in range(50):
     t0 = time.time()
     x , y = train_loader.next_batch()
     x, y = x.to(device) , y.to(device)
     optimizer.zero_grad()
-    # with torch.autocast(device_type=device, dtype=torch.bfloat16):
-    #     logits , loss = model(x , y)
-    logits , loss = model(x, y)
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits , loss = model(x , y)
+    # logits , loss = model(x, y)
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     torch.cuda.synchronize()
     t1 = time.time()
-    dt = (t1 - t0) * 1000 # time difference in mi;eseconds
-    tokens_per_sec = (train_loader.B * train_loader.T) / (t1-t0)
-    print(f"Step {i} , loss {loss.item()}, dt : {dt:.2f}ms , tok/sec:{tokens_per_sec}")
+    dt = t1 - t0# time difference in mi;eseconds
+    tokens_processed = train_loader.B * train_loader.T
+    tokens_pre_sec = tokens_processed / dt
+    print(f"Step {i:4d} | loss {loss.item():.6f} | norm : {norm:.4f}| dt : dt {dt*1000:2f}ms , tok/sec:{tokens_pre_sec}")
 
 import sys; sys.exit(0)   
 
 
-# generate right now x is  (B, T) where B = 5,T = 8
-# set the seed to 42
-# set the seed for reproducibility
-# torch.manual_seed(42)
-# torch.cuda.manual_seed(42)
-
-# while x.size(1) < max_length:
-#     with torch.no_grad():
-#         # forward the model to get the logits
-#         logits = model(x)  # (B, T, vocab_size)
-#         # take the logits at the last position
-#         logits = logits[:, -1, :]  # B, vocab_size
-#         probs = F.softmax(logits, dim=-1)
-#         # do top-k sampling of 50 [huggingface pipeline default]
-#         topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-#         # select a token from the top-k probabilities
-#         ix = torch.multinomial(topk_probs, 1)
-#         xcol = torch.gather(topk_indices, -1, ix)
-#         x = torch.cat((x, xcol), dim=1)
-
-# # print the generated text
-# for i in range(num_return_sequences):
-#     tokens = x[i, :max_length].tolist()
-#     decoded = enc.decode(tokens)
-#     print(">", decoded)
