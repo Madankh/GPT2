@@ -5,7 +5,7 @@ import inspect
 import math
 from dataclasses import dataclass
 import time
-
+import os
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -229,14 +229,36 @@ class DataLoaderLite:
             self.current_position = 0
         return x, y
     
+# ---------------------- Distributed data parallel --------------
+from torch.distributed import init_process_group, destroy_process_group
+# set up DDP 
+# torchrun command set the env variables Rank , Local_Rank are world_s9ze
 # ---------------------------------------------------
-device = "cuda"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = 'mps'
-print("using device" , device)
-# de
+ddp = int(os.environ.get('RANK', -1)) !=1 # is this a ddp run ? 
+if ddp:
+    # use of DDP aim demands CUDA we set the device appropriately according to rand
+    assert torch.cuda.is_available(), "For now i think we need cuda for DDP"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0 # this process will dp logging checkpointing etc
+else:
+    # valila non-DDP run
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    print(f"using device : device")
+
+
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
@@ -244,13 +266,16 @@ if torch.cuda.is_available():
 total_batch_size = 524288
 B=16
 T=1024 # seq_len
-assert total_batch_size % (B * T) == 0, "Make same total_batch_size is divisible by B * T"
-grad_accum_steps = total_batch_size // (B * T)
-print(f"Total desired batch_size: {total_batch_size}")
-print(f"=> calculated gradient accumulation steps {grad_accum_steps}")
+assert total_batch_size % (B * T * ddp_world_size) == 0, "Make same total_batch_size is divisible by B * T"
+grad_accum_steps = total_batch_size // (B * T  *ddp_world_size)
+if master_process:
+    print(f"Total desired batch_size: {total_batch_size}")
+    print(f"=> calculated gradient accumulation steps {grad_accum_steps}")
+print("I am GPU ", ddp_rank)
+
+import sys;sys.exit(0)
 
 train_loader = DataLoaderLite(B=B, T=T)
-
 torch.set_float32_matmul_precision('high')
 # get logits
 model = GPT(GPTConfig(vocab_size=50304))
