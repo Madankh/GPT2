@@ -286,7 +286,7 @@ model.to(device)
 model = torch.compile(model)
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
-
+raw_model = model.module if ddp else model
 warmup_steps = 10
 max_steps = 50
 max_lr = 6e-4
@@ -304,7 +304,7 @@ def get_lr(it):
 
 
 # optimizer = model.configure_optimizer(weight_decay=0.1, learning_rate=6e-4, device=device)
-optimizer = model.module.configure_optimizer(weight_decay=0.1, learning_rate=6e-4, device=device)
+optimizer = raw_model.configure_optimizer(weight_decay=0.1, learning_rate=6e-4, device=device)
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
 for step in range(max_steps):
     t0 = time.time()
