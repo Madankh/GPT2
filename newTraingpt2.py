@@ -5,6 +5,7 @@ import inspect
 import math
 from dataclasses import dataclass
 import os
+import time
 
 class MLP(nn.Module):
     def __init__(self, config) -> None:
@@ -12,6 +13,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4*config.n_embd)
         self.gelu = nn.GELU(approximate="tanh")
         self.c_proj = nn.Linear(4*config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -39,6 +41,7 @@ class CausalSelfAttention(nn.Module):
         # Key, query, values projections for all head but in batch
         self.c_attn = nn.Linear(config.n_embd, 3*config.n_embd)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1.0
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1,1,config.block_size, config.block_size))
@@ -88,7 +91,19 @@ class GPT(nn.Module):
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight
-        # self.apply(self._)
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std=0.02
+            if hasattr(module, "NANOGPT_SCALE_INIT"):
+                std *= (2*self.config.n_layer) ** -5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.2)
+
 
     def forward(self, idx, targets=None):
         # idx is of shape (B, T)
@@ -158,17 +173,6 @@ class GPT(nn.Module):
         return model
 
 # ---------------------
-# Attemp to autodetect the device
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = "mps"
-print(f"using device: {device}")
-
-# perfix tokens
-import tiktoken
-
 class DataLoaderLite:
     def __init__(self, B ,T) -> None:
         self.B = B
@@ -196,25 +200,44 @@ class DataLoaderLite:
         if self.current_position + (B * T + 1) > len(self.tokens):
             self.current_position  = 0
         return x, y
+    
+# Attemp to autodetect the device
+device = "cpu"
+if torch.cuda.is_available():
+    device = "cuda"
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps"
+print(f"using device: {device}")
 
-train_loader = DataLoaderLite(B=4, T=32)
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
+# perfix tokens
+import tiktoken
+
+
+train_loader = DataLoaderLite(B=6, T=212)
 # get logits
 model = GPT(GPTConfig())
 model.to(device)
 # logits, loss = model(x, y)
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-
 for i in range(50):
+    t0 = time.time()
     x,y =  train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
     logits, loss = model(x,y)
     loss.backward()
     optimizer.step()
-    print(f"step {i}, loss : {loss.item()}")
+    torch.cuda.synchronize()
+    t1 = time.time()
+    dt = (t1-t0)*1000 # time different in miliseconds
+    tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
+    print(f"step {i}, loss : {loss.item()}, dt: {dt:.2f}ms, tok/sec:{tokens_per_sec}")
 
 # print(logits.shape)
-print(loss, "loss")
+# print(loss, "loss")
 import sys;
 sys.exit(0)
 
