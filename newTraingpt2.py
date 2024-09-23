@@ -59,10 +59,12 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C//self.n_head).transpose(1,2)
         v = v.view(B, T, self.n_head, C//self.n_head).transpose(1,2)
 
-        att = (q @ k.transpose(-2, -1))
-        att = att.masked_fill(self.bias[:,:,:T,:T] ==0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        y = att @ v # (B , nh , T, T) x (B , nh, T, hs) -> (B, nh, T, hs)
+        # att = (q @ k.transpose(-2, -1))
+        # att = att.masked_fill(self.bias[:,:,:T,:T] ==0, float('-inf'))
+        # att = F.softmax(att, dim=-1)
+        # y = att @ v # (B , nh , T, T) x (B , nh, T, hs) -> (B, nh, T, hs)
+
+        y = F.scaled_dot_product_attention(q,k,v,is_causal=True)
         y = y.transpose(1, 2).contiguous().view(B , T , C) # re-assemble all head outputs side by side 
         y = self.c_proj(y)
         return y
@@ -216,25 +218,29 @@ if torch.cuda.is_available():
 import tiktoken
 
 
-train_loader = DataLoaderLite(B=6, T=212)
+train_loader = DataLoaderLite(B=16, T=1024)
+torch.set_float32_matmul_precision('high')
 # get logits
-model = GPT(GPTConfig())
+model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
+model = torch.compile(model)
 # logits, loss = model(x, y)
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
 for i in range(50):
     t0 = time.time()
     x,y =  train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    logits, loss = model(x,y)
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits, loss = model(x,y)
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     torch.cuda.synchronize()
     t1 = time.time()
-    dt = (t1-t0)*1000 # time different in miliseconds
+    dt = (t1-t0) # time different in miliseconds
     tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
-    print(f"step {i}, loss : {loss.item()}, dt: {dt:.2f}ms, tok/sec:{tokens_per_sec}")
+    print(f"step {i:4d} | loss : {loss.item():.6f} | norm: {norm:.4f} | dt: {dt*1000}ms, tok/sec:{tokens_per_sec}")
 
 # print(logits.shape)
 # print(loss, "loss")
