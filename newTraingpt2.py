@@ -199,9 +199,10 @@ class GPT(nn.Module):
 
 # ---------------------
 class DataLoaderLite:
-    def __init__(self, B ,T) -> None:
+    def __init__(self, B ,T, process_rank, num_processes) -> None:
         self.B = B
         self.T = T
+        self
 
         # At init load tokens from disk and   store them in memory
         with open('input.txt', 'r') as f:
@@ -230,14 +231,29 @@ class DataLoaderLite:
 from torch.distributed import init_process_group, destroy_process_group
 # set up DDP distributed data parallel
 ddp = int(os.environ.get('RANK', -1))  != -1 # is  this ddp run ? 
+if ddp:
+    # use of DDP at demainds CUDA
+    assert torch.cuda.is_available(), "for now i think we need CUDA for DDP"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    device = f"cuda:{ddp_local_rank}"
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0 # this process will do logging , checkpointing 
+else:
+    # vanilla, non-DDP run
+    ddp_rank = 0
+    ddp_local_rank = 1
+    ddp_world_size = 1
+    master_process  =True
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    print(f"using device: {device}")
 
-# Attemp to autodetect the device
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = "mps"
-print(f"using device: {device}")
 
 torch.manual_seed(1337)
 if torch.cuda.is_available():
@@ -246,10 +262,11 @@ if torch.cuda.is_available():
 total_batch_size = 524288
 B = 16
 T = 1024
-assert total_batch_size % (B * T) == 0 
-grad_accum_steps = total_batch_size // (B * T)
-print(f"Total desired batch size : {total_batch_size}")
-print(f"=> calculated gradient accumulation steps : {grad_accum_steps}")
+assert total_batch_size % (B * T * ddp_world_size) == 0 
+grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
+if master_process:
+    print(f"Total desired batch size : {total_batch_size}")
+    print(f"=> calculated gradient accumulation steps : {grad_accum_steps}")
 
 # perfix tokens
 import tiktoken
