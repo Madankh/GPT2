@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import time
-import dataclasses import dataclass
+from dataclasses import dataclass
 from torch.nn import functional as F
 
 
@@ -45,7 +45,7 @@ class CausalSelfAttention(nn.Module):
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
         self.n_head = config.n_head
         self.n_embd = config.n_embd
-
+        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1,1,config.block_size, config.block_size))
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -70,23 +70,45 @@ class CausalSelfAttention(nn.Module):
 class GPTConfig:
     block_size:int = 1024 # max sequence length
     vocab_size: int = 50257 # number of tokens: 50,000 BPE merges + 256 bytes tokens + 1 <|endoftext|> token
-    n_layers : int = 12 # number of layers
+    n_layer : int = 12 # number of layers
     n_head : int = 12 # number of heads
     n_embd : int = 768 # embedding dimension
-
 
 class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
 
-        self.tranformer = nn.ModuleDict(dict(
+        self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_enbd),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layers)]),
+            wpe = nn.Embedding(config.block_size, config.n_embd),
+            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        
+        # Weight sharing scheme
+        self.transformer.wte.weight = self.lm_head.weight
+
+    def forward(self, idx, targets=None):
+        B,T = idx.size()
+
+        assert T<=self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
+        # Forward the token and position embding  
+        pos = torch.arange(0,T,dtype=torch.long, device=idx.device)
+        pos_emd = self.transformer.wpe(pos)
+        tok_emd = self.transformer.wte(idx)
+        x = pos_emd + tok_emd
+        # forward the blocks of the transformer
+        for block in self.transformer.h:
+            x  = block(x)
+        # forward the final layernorm and the classifier
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x)
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
     
     @classmethod
     def from_pretrained(cls, model_type):
@@ -136,35 +158,82 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
         return model
     
-    def forward(self, idx, targets=None):
-        B,T = idx.size()
+import numpy as np
 
-        assert T<=self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
-        # Forward the token and position embding  
-        pos = torch.arange(0,T,dtype=torch.long, device=idx.device)
-        pos_emd = self.tranformer.wpe(pos)
-        tok_emd = self.tranformer.wte(idx)
-        x = pos_emd + tok_emd
-        # forward the blocks of the transformer
-        for block in self.tranformer.h:
-            x  = block(x)
-        # forward the final layernorm and the classifier
-        x = self.tranformer.ln_f(x)
-        logits = self.lm_head(x)
-        loss = None
-        if targets is None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target=(-1))
-        return logits, loss
-    
-    import tiktoken
-    import numpy as np
+device = "cuda"  # Start with a default device
+if torch.cuda.is_available():
+    print("hehe")
+#     device = "cuda"
+# elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+#     device = "mps"
 
-    def load_tokens(filename):
-        npt = np.load(filename)
-        npt = npt.astype(np.int32)
-        ptt = torch.tensor(npt, dtype=torch.long)
-        return ptt
+print(f"Using device: {device}")
+import tiktoken
+enc = tiktoken.get_encoding('gpt2')
+with open('input.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]
+tokens = enc.encode(text)
+B,T = 4, 32
+buf = torch.tensor(tokens[: B * T + 1])
+x = buf[:-1].view(B,T).to(device)
+y = buf[1:].view(B, T).to(device)
+
+# get logits
+# model = GPT.from_pretrained('gpt2')
+model = GPT(GPTConfig())
+model.to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    print(f"Step {i}, loss:{loss.item()}")
+
+print(loss, "loss")
+import sys;sys.exit(0)
+
+
+# def load_tokens(filename):
+#     npt = np.load(filename)
+#     npt = npt.astype(np.int32)
+#     ptt = torch.tensor(npt, dtype=torch.long)
+#     return ptt
     
+model.eval()
+num_return_sequences=5
+max_length = 30
+tokens = enc.encode("Hello I'm a language model")
+tokens = torch.tensor(tokens, dtype=torch.long)
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # [5, 8]
+x = tokens.to(device)
+
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+while x.size(1) < max_length:
+    # forward the model to get the logits
+    with torch.no_grad():
+        logits, _ = model(x) # (B, T, vocab_size)
+        logits = logits[:,-1,:] # (B, vocab_size)
+        # get the probabilities
+        probs = F.softmax(logits, dim=-1)
+        # do Top-k sampling of 50 (huggingface pipeline default)
+        # topk_probs here becoomes (5,50), topk_indices is (5, 50)
+        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+        # select a token from the top-k probabilities
+        ix = torch.multinomial(topk_probs, 1) # (B, 1)
+        # gather the corresponding indicees
+        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
+        # apppend to the sequence
+        x = torch.cat((x, xcol), dim=1)
+
+# print the generated text
+for i in range(num_return_sequences):
+    tokens = x[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(decoded)
+
     
         
 
