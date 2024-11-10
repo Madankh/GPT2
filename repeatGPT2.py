@@ -18,6 +18,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4*config.n_embd)
         self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT=1
     def forward(self, x):
         x = self.c_fc(x)
         x = self.gelu(x)
@@ -43,6 +44,8 @@ class CausalSelfAttention(nn.Module):
         assert config.n_embd % config.n_head == 0
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT=1
+
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1,1,config.block_size, config.block_size))
@@ -57,10 +60,11 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C//self.n_head).transpose(1,2)
         v = v.view(B, T, self.n_head, C//self.n_head).transpose(1,2)
 
-        att = q @ k.transpose(-2, -1) / (1/math.sqrt(k.size(-1)))
-        att  = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        y = att @ v
+        # att = q @ k.transpose(-2, -1) / (1/math.sqrt(k.size(-1)))
+        # att  = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        # att = F.softmax(att, dim=-1)
+        # y = att @ v
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         y = y.transpose(1,2).contiguous().view(B,T,C)
         y = self.c_proj(y)
         return y
@@ -89,6 +93,21 @@ class GPT(nn.Module):
         
         # Weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
+        # init params
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std *= (2*self.config.n_layer)**-0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                torch.nn.init.normal_(module.weight, mean=0.0, std=0.2)
+
+    
 
     def forward(self, idx, targets=None):
         B,T = idx.size()
@@ -166,30 +185,93 @@ if torch.cuda.is_available():
 #     device = "cuda"
 # elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 #     device = "mps"
-
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
+    
 print(f"Using device: {device}")
 import tiktoken
-enc = tiktoken.get_encoding('gpt2')
-with open('input.txt', 'r') as f:
-    text = f.read()
-text = text[:1000]
-tokens = enc.encode(text)
-B,T = 4, 32
-buf = torch.tensor(tokens[: B * T + 1])
-x = buf[:-1].view(B,T).to(device)
-y = buf[1:].view(B, T).to(device)
+
+class DataLoaderLite:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+
+        with open('input.txt', 'r') as f:
+            text = f.read()
+
+        enc = tiktoken.get_encoding('gpt2')
+
+        tokens = enc.encode(text)
+
+        self.tokens = torch.tensor(tokens)
+
+        print(f"loaded {len(self.tokens)} tokens")
+
+        print(f"1 epoch = {len(self.tokens)//(B*T)} batches")
+
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.current_position:self.current_position+B*T+1]
+        x = (buf[:-1]).view(B,T)
+        y = (buf[1:]).view(B,T)
+        self.current_position += B*T+1
+        # if loading the next batch would be out of bounds , reset
+        if self.current_position + (B*T+1)>len(self.tokens):
+            self.current_position = 0
+        return x, y
+
+train_loader = DataLoaderLite(B=4,T=34)
+torch.set_float32_matmul_precision('high')
 
 # get logits
 # model = GPT.from_pretrained('gpt2')
-model = GPT(GPTConfig())
+model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(50):
+model = torch.compile(model)
+
+max_lr = 6e-4  # Maximum learning rate
+min_lr = max_lr * 0.1  # Minimum learning rate, set to 10% of max_lr
+warmup_steps = 10  # Number of iterations for the warm-up phase
+max_steps = 50  # Total iterations over which to decay the learning rate
+
+
+def get_lr(it):
+    # 1) Linear warmup for warmup_iters steps
+    if it < warmup_steps:
+        return max_lr * (it + 1)/warmup_steps
+    # 2) if it > lr_decay_iters, return min_learning_rate
+
+    if it>max_steps:
+        return min_lr
+    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas = (0.9, 0.95, eps=1e-8))
+for step in range(max_steps):
+    t0 = time.time()
+    x, y = train_loader.next_batch()
+    x , y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    logits, loss = model(x, y)
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits, loss = model(x, y)
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    lr = get_lr(step)
+    for param_group in optimizer.param_group:
+        param_group['lr'] = lr
     optimizer.step()
-    print(f"Step {i}, loss:{loss.item()}")
+    torch.cuda.synchronize()
+    t1 = time.time()
+    dt = (t1 - t0) # time different in milliseconds
+    tokens_processed = train_loader.B * train_loader.T
+    tokens_per_sec = tokens_processed / dt
+    # print(f"Step {i}, loss:{loss.item():.6f} | norm : {norm:.4f}")
+    print(f"Step {i},  loss {loss.item():.6f} | lr : {lr:.4f} | norm : {norm:.4f}| dt : dt {dt*1000:2f}ms | tokens_per_sec : {tokens_per_sec}")
 
 print(loss, "loss")
 import sys;sys.exit(0)
