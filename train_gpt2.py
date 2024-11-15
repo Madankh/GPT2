@@ -505,7 +505,7 @@ for step in range(max_steps):
     
 
 
-# Tranning loop
+    # Tranning loop
     model.train()
     optimizer.zero_grad()
     loss_accum = 0.0
