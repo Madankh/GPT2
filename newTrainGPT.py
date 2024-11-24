@@ -1,3 +1,10 @@
+import os
+import sys
+with open(sys.argv[0]) as f:
+    code = f.read() 
+
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,6 +15,8 @@ import os
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 # import torch._dynano
+# Use of FlexAttention contributed by @KoszarskyB
+
 
 batch_size = 64
 block_size = 256
@@ -34,3 +43,9 @@ class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+
+        self.transformer = nn.ModuleDict(dict(
+            wte  = nn.Embedding(config.vocab_size, config.n_embd),
+            wpe = nn.Embedding(config.block_size, config.n_embd),
+
+        ))
