@@ -119,7 +119,7 @@ class GPT(nn.Module):
     def forward(self, idx , targets=None):
         # idxus is if shape (B, T)
         B , T = idx.size()
-        assert T<= self.config.block_size, f"Cannot forward sequence of lenth {T}, block size"
+        assert T<= self.config.block_size, f"Cannot forward sequence of length {T}, block size"
         # forward the token and positition embedding
         pos = torch.arange(0,T,dtype=torch.long, device=idx.device) # shape (T)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T , n_embed)
