@@ -1,21 +1,36 @@
 import os
 import sys
 with open(sys.argv[0]) as f:
-    code = f.read() 
+    code = f.read() # read the code of this file ASAP, for logging
+import uuid
+import glob
+import time
+import contextlib
+from dataclasses import dataclass
 
 import numpy as np
-
 import torch
-import torch.nn as nn
+from torch import nn
 import torch.nn.functional as F
-import math
-from dataclasses import dataclass
-import time
-import os
-from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
+import torch._inductor.config as config
+from torch.nn.parallel import DistributedDataParallel as DDP
+# Use of FlexAttention contributed by @KoszarskyB
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+flex_attention = torch.compile(flex_attention, dynamic=False)
+create_block_mask = torch.compile(create_block_mask, dynamic=False)
 # import torch._dynano
 # Use of FlexAttention contributed by @KoszarskyB
+
+
+# Muon Optimizer
+def zeropower_via_svd(G, steps=None):
+    U,S,V = G.svd()
+    return U @ V.T
+
+@torch.compile
+def zeropower_via_newtonschulz5(G, steps=10, eps=1e-7):
+    
 
 
 batch_size = 64
