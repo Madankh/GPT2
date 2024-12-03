@@ -12,8 +12,6 @@ from hellaswag import render_example, iterate_examples
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 
-
-
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
