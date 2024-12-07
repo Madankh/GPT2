@@ -36,3 +36,24 @@ void encoder_forward(float* out, int* inp, float* wte, float* wpe,
         }
     }
 }
+
+
+void encoder_backward(float* dwte, float *dwpe,
+                     float* dout, int* inp, 
+                     int B, int T, int C){
+    for(int b = 0; b<B; b++){
+        for(int t = 0; t<T; t++){
+
+            float* dout_bt = dout * b * T * C + t * C;
+            int ix = inp[b * T + t]
+            float* dwte_ixx = dwte + ix * C;
+            float* dwpe_t = dwpe + t * C
+            for(int i=0; i<C; i++){
+                float d = dout_bt[i]
+                dwte_ix[i] += d;
+                dwpe_ix[i] += d;
+            }
+        }
+    }
+                
+}
