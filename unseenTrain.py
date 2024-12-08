@@ -53,3 +53,60 @@ class CausalSelfAttention(nn.Module):
 
         y = self.final_layer(y)
         return y
+    
+class Block(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.ln_1 = nn.LayerNorm(config.n_embd)
+        self.selfattention = CausalSelfAttention(config)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.mlp = MLP(config)
+
+
+    def forward(self,x):
+        x = x + self.selfattention(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
+        return x
+
+
+
+@dataclass
+class GPTConfig:
+    block_size:int=1024
+    vocab_size : int = 58257
+    n_layer : int = 12
+    n_head : int = 12
+    n_embd : int = 768
+
+class GPT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.transformer = nn.ModuleDict(
+            dict(
+             wte = nn.Embedding(config.vocab_size, config.n_embd),
+             wpe = nn.Embedding(config.block_size, config.n_embd),
+             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+             ln_r = nn.LayerNorm(config.n_embd),
+            )
+        )
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+    def forward(self, idx, targets=None):
+        B, T = idx.size()
+        assert T<= self.config.block_size, f"Cannot forward sequence of length {T}, block size"
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        pos_emb = self.transformer.wpe(pos)
+        tok_emb = self.transformer.wte(idx)
+
+        x = pos_emb + tok_emb
+        for block in self.transformer.h:
+            block(x)
+        x = self.transformer.ln_r(x)
+        logits = self.lm_head(x)
+        loss = None
+        if targets is  not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
+
+
+        
