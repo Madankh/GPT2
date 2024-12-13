@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import inspect
 import math
 import torch.nn.functional as F
 from dataclasses import dataclass
@@ -91,6 +92,17 @@ class GPT(nn.Module):
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, "NONOGPT_SCALE_INIT"):
+                std *= (2 * self.config.n_layer) ** -5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.2)
+
     def forward(self, idx, targets=None):
         B, T = idx.size()
         assert T<= self.config.block_size, f"Cannot forward sequence of length {T}, block size"
@@ -107,7 +119,27 @@ class GPT(nn.Module):
         if targets is  not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         return logits, loss
-    def configuration
+    def configure_optimizer(self, weight_decay, learning_rate, device):
+        params_dict = {pn:p for pn, p in self.parameters()}
+        params_dict = {pn : p for pn, p in params_dict.items() if p.requires_grad}
+
+        decay_params = {p for pn , p in params_dict.items() if p.dim() >=2}
+        non_decay_params = {p for pn, p in params_dict.items() if p.dim() < 2}
+
+        optim_groups = [
+            {'params' : decay_params , 'weight_decay':weight_decay},
+            {'params' : non_decay_params, 'weight_decay':0.0}
+        ]
+        fused_avaliable = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused  = fused_avaliable and 'cuda' in device
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), fused=use_fused)
+        return optimizer
+    
+import tiktoken
+    
+
+
+
 
 
         
